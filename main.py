@@ -94,22 +94,23 @@ class Net:
         else:
             print("independent")
 
-    def marginalization(self, var, factor):
+    @staticmethod
+    def marginalization(var, factor):
         for j, v in enumerate(factor[0]):
             if v == var:
-                newvariables = list(factor[0])[:j] + list(factor[0])[j + 1:]
-                newentries = {}
+                new_vars = list(factor[0])[:j] + list(factor[0])[j + 1:]
+                new_entries = {}
                 for entry in factor[1]:
                     entry = list(entry)
-                    newkey = tuple(entry[:j] + entry[j + 1:])
+                    new_key = tuple(entry[:j] + entry[j + 1:])
                     entry[j] = True
                     prob1 = factor[1][tuple(entry)]
                     entry[j] = False
                     prob2 = factor[1][tuple(entry)]
                     prob = prob1 + prob2
-                    newentries[newkey] = prob
-                factor = (newvariables, newentries)
-                if len(newvariables) == 0:
+                    new_entries[new_key] = prob
+                factor = (new_vars, new_entries)
+                if len(new_vars) == 0:
                     del factor
         return factor
 
@@ -152,7 +153,7 @@ class Net:
                 entries[key] = self.query_given(var, e)
         return params, entries
 
-    def join(self, common_var, factor1, factor2, evidences):
+    def join(self, factor1, factor2, evidences):
         vars1 = factor1[0]
         vars2 = factor2[0]
         new_vars = list()
@@ -161,7 +162,6 @@ class Net:
         new_vars = set(new_vars)
         new_factor = dict()
         perms = self.gen_permutations(len(new_vars))
-
         for perm in perms:
             entries = {}
             conflict = False
@@ -191,9 +191,10 @@ class Net:
                     l.append(v)
         return l
 
-    # TODO: implement this
     def ordering(self):
-        return self.net.keys()
+        a = self.topological_sort()
+        a.reverse()
+        return a
 
     def eliminate(self, var, factors, evidences):
         base_factor = None
@@ -202,14 +203,13 @@ class Net:
             vars = factor[0]
             if var in vars:
                 if base_factor:
-                    base_factor = self.join(var, base_factor, factor, evidences)
+                    base_factor = self.join(base_factor, factor, evidences)
                 else:
                     base_factor = factor
                 list_indx.append(factor)
         for element in list_indx:
             factors.remove(element)
         base_factor = self.marginalization(var, base_factor)
-        #base_factor= (base_factor[0],self.normalize(base_factor[1]))
         factors.append(base_factor)
 
     def variable_elimination(self, X, e):
@@ -218,14 +218,11 @@ class Net:
             factor_vars[v] = self.net[v]['parents'].copy()
             factor_vars[v].append(v)
         factors = []
-        eliminated = []
         for var in self.net.keys():
             factors.append(self.build_factor(var, factor_vars[var], e))
-        # TODO: implement condition
         for var in self.ordering():
             if var not in e and var != X:
                 self.eliminate(var, factors, e)
-                eliminated.append(var)
         entries = {}
         list_entry = []
         list_elem = []
@@ -233,19 +230,23 @@ class Net:
             list_elem.append(elem)
         list_elem.append(X)
         list_elem = set(list_elem)
+        temp_factor = None
         for factor in factors:
-            factor_set = set(factor[0])
-            if factor_set == list_elem:
-                for element in factor[0]:
-                    if element in e:
-                        list_entry.append(e[element])
-                    else:
-                        list_entry.append(True)
-                temp = self.normalize(factor[1])
-                #res = "{:.2f}".format(temp[tuple(list_entry)])
-                #print(res)
-                print(temp[tuple(list_entry)])
-                break
+            if temp_factor:
+                temp_factor = self.join(None, temp_factor, factor, e)
+            else:
+                temp_factor = factor
+
+        temp = self.normalize(temp_factor[1])
+        factor_set = set(temp_factor[0])
+        if factor_set == list_elem:
+            for element in temp_factor[0]:
+                if element in e:
+                    list_entry.append(e[element])
+                else:
+                    list_entry.append(True)
+        res = "{:.2f}".format(temp[tuple(list_entry)])
+        print(res)
 
     @staticmethod
     def normalize(dist):
