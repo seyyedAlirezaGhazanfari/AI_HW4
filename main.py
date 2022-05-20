@@ -18,11 +18,12 @@ class Net:
         for node in self.graph.keys():
             self.net[node]['parents'] = self.get_parents(node, self.graph)
             self.net[node]['children'] = self.get_children(node, self.undirected_graph, self.graph)
-            self.net[node]['prob'] = self.get_prob(node, self.graph, self.cpt)
-            if self.net[node]['prob'] != -1:
+            self.net[node]['prob'] = -1
+            self.net[node]['condprob'] = []
+            if self.net[node]['parents']:
                 self.net[node]['condprob'] = self.get_cond_prob(node, self.graph, self.cpt)
             else:
-                self.net[node]['condprob'] = []
+                self.net[node]['prob'] = self.get_prob(node, self.graph, self.cpt)
 
     @staticmethod
     def get_parents(var, graph):
@@ -49,10 +50,68 @@ class Net:
         l = [True, False]
         perms = list(itertools.product(l, repeat=length))
         assert (len(perms) == pow(2, length))
-        result = list()
+        result = dict()
         for perm_idx in range(len(perms)):
-            result.append((perms[perm_idx], var_probs[perm_idx]))
+            result[perms[perm_idx]] = var_probs[perm_idx]
         return result
+
+    @staticmethod
+    def reachable(bn, x, e, end_node):
+        L = set(e)
+        ancestors = set()
+        while L:
+            y = L.pop()
+            if y not in ancestors:
+                L = L.union(bn[y]['parents'])
+            ancestors = ancestors.union({y})
+        visited, reachable = set(), set()
+        up, down = True, False
+        L = {(x, up)}
+        while L:
+            y, d = L.pop()
+            if (y, d) not in visited:
+                if y not in e:
+                    reachable = reachable.union({y})
+                visited = visited.union({(y, d)})
+                if d == up and y not in e:
+                    parents = set(bn[y]['parents'])
+                    children = set(bn[y]['children'])
+                    for elem in parents:
+                        L = L.union({(elem, up)})
+                    for elem in children:
+                        L = L.union({(elem, down)})
+                elif d == down:
+                    if y not in e:
+                        children = set(bn[y]['children'])
+                        for elem in children:
+                            L = L.union({(elem, down)})
+                    if y in ancestors:
+                        parents = set(bn[y]['parents'])
+                        for elem in parents:
+                            L = L.union({(elem, up)})
+        if end_node in reachable:
+            print("dependent")
+        else:
+            print("independent")
+
+    def marginalization(self, var, factor):
+        for j, v in enumerate(factor[0]):
+            if v == var:
+                newvariables = list(factor[0])[:j] + list(factor[0])[j + 1:]
+                newentries = {}
+                for entry in factor[1]:
+                    entry = list(entry)
+                    newkey = tuple(entry[:j] + entry[j + 1:])
+                    entry[j] = True
+                    prob1 = factor[1][tuple(entry)]
+                    entry[j] = False
+                    prob2 = factor[1][tuple(entry)]
+                    prob = prob1 + prob2
+                    newentries[newkey] = prob
+                factor = (newvariables, newentries)
+                if len(newvariables) == 0:
+                    del factor
+        return factor
 
     def query_given(self, y, e):
         if self.net[y]['prob'] != -1:
@@ -74,7 +133,7 @@ class Net:
             return perms
 
     def build_factor(self, var, factor_vars, evidences: dict):
-        params = [var, ]
+        params = []
         params.extend(factor_vars)
         perms = self.gen_permutations(len(params))
         entries = dict()
@@ -93,7 +152,7 @@ class Net:
                 entries[key] = self.query_given(var, e)
         return params, entries
 
-    def join(self, common_var, factor1, factor2):
+    def join(self, common_var, factor1, factor2, evidences):
         vars1 = factor1[0]
         vars2 = factor2[0]
         new_vars = list()
@@ -102,187 +161,110 @@ class Net:
         new_vars = set(new_vars)
         new_factor = dict()
         perms = self.gen_permutations(len(new_vars))
-        entries = {}
-        for perm in perms:
-            for pair in zip(new_vars, perm):
-                entries[pair[0]] = pair[1]
-        key = tuple(entries[v] for v in new_vars)
-        key1 = tuple(entries[v] for v in factor1[0])
-        key2 = tuple(entries[v] for v in factor2[0])
-        prob = factor1[1][key1] * factor2[1][key2]
-        new_factor[key] = prob
 
+        for perm in perms:
+            entries = {}
+            conflict = False
+            for pair in zip(new_vars, perm):
+                if pair[0] in evidences.keys() and pair[1] != evidences[pair[0]]:
+                    conflict = True
+                    break
+                entries[pair[0]] = pair[1]
+            if conflict:
+                continue
+            key = tuple(entries[v] for v in new_vars)
+            key1 = tuple(entries[v] for v in factor1[0])
+            key2 = tuple(entries[v] for v in factor2[0])
+            prob = factor1[1][key1] * factor2[1][key2]
+            new_factor[key] = prob
         return new_vars, new_factor
 
-    def marginalization(self, var, factor):
-        vars = factor[0]
-        for i, variable in enumerate(vars):
-            if variable == var:
-                new_variables = list(set(vars).difference([variable, ]))
-                new_table = {}
-                for entry in factor[1]:
-                    entry = list(entry)
-                    new_key = tuple(new_variables)
-                    entry[i] = True
-                    prob1 = factor[1][tuple(entry)]
-                    entry[i] = False
-                    prob2 = factor[1][tuple(entry)]
-                    prob = prob1 + prob2
-                    new_table[new_key] = prob
-                    factor = (new_variables, new_table)
-                    if len(new_variables) == 0:
-                        del factor
-        return factor
-
-    def variable_elimination(self, X, evidences):
-        eliminated = set()
-        factors = list()
-        while len(eliminated) < len(self.net):
-            variables = filter(lambda v: v not in eliminated, list(self.net.keys()))
-            variables = filter(lambda v: all(c in eliminated for c in self.net[v]['children']), variables)
-            factor_vars = {}
+    def topological_sort(self):
+        variables = list(self.net.keys())
+        variables.sort()
+        s = set()
+        l = []
+        while len(s) < len(variables):
             for v in variables:
-                factor_vars[v] = [p for p in self.net[v]['parents'] if p not in evidences]
-                if v not in evidences:
-                    factor_vars[v].append(v)
-            var = sorted(factor_vars.keys(), key=(lambda x: (len(factor_vars[x]), x)))[0]
-            if len(factor_vars[var]) > 0:
-                factors.append(self.build_factor(var, factor_vars, evidences))
-            if var != X and var not in evidences:
-                temp_factors = []
-                for factor in factors:
-                    factor_res = self.marginalization(var, factor)
-                    temp_factors.append(factor_res)
-                factors = temp_factors
-            eliminated.add(var)
-            for factor in factors:
-                asg = {}
-                perms = list(self.gen_permutations(len(factor[0])))
-                perms.sort()
-                for perm in perms:
-                    for pair in zip(factor[0], perm):
-                        asg[pair[0]] = pair[1]
-                    key = tuple(asg[v] for v in factor[0])
-        if len(factors) >= 2:
-            result = factors[0]
-            for factor in factors[1:]:
-                result = self.join(var, result, factor)
-        else:
-            result = factors[0]
-        return self.normalize((result[1][(False,)], result[1][(True,)]))
+                if v not in s and all(x in s for x in self.net[v]['parents']):
+                    s.add(v)
+                    l.append(v)
+        return l
+
+    # TODO: implement this
+    def ordering(self):
+        return self.net.keys()
+
+    def eliminate(self, var, factors, evidences):
+        base_factor = None
+        list_indx = []
+        for factor in factors:
+            vars = factor[0]
+            if var in vars:
+                if base_factor:
+                    base_factor = self.join(var, base_factor, factor, evidences)
+                else:
+                    base_factor = factor
+                list_indx.append(factor)
+        for element in list_indx:
+            factors.remove(element)
+        base_factor = self.marginalization(var, base_factor)
+        #base_factor= (base_factor[0],self.normalize(base_factor[1]))
+        factors.append(base_factor)
+
+    def variable_elimination(self, X, e):
+        factor_vars = {}
+        for v in self.net.keys():
+            factor_vars[v] = self.net[v]['parents'].copy()
+            factor_vars[v].append(v)
+        factors = []
+        eliminated = []
+        for var in self.net.keys():
+            factors.append(self.build_factor(var, factor_vars[var], e))
+        # TODO: implement condition
+        for var in self.ordering():
+            if var not in e and var != X:
+                self.eliminate(var, factors, e)
+                eliminated.append(var)
+        entries = {}
+        list_entry = []
+        list_elem = []
+        for elem in e.keys():
+            list_elem.append(elem)
+        list_elem.append(X)
+        list_elem = set(list_elem)
+        for factor in factors:
+            factor_set = set(factor[0])
+            if factor_set == list_elem:
+                for element in factor[0]:
+                    if element in e:
+                        list_entry.append(e[element])
+                    else:
+                        list_entry.append(True)
+                temp = self.normalize(factor[1])
+                #res = "{:.2f}".format(temp[tuple(list_entry)])
+                #print(res)
+                print(temp[tuple(list_entry)])
+                break
 
     @staticmethod
     def normalize(dist):
-        return tuple(x * 1 / sum(dist) for x in dist)
-
-
-def find_all_paths(x: int, y: int, undirected_graph: dict, visited: set):
-    if x == y:
-        return [[y]]
-    if x in visited:
-        return list()
-    options = undirected_graph[x]
-    temp_options = list()
-    for option in options:
-        if option not in visited:
-            temp_options.append(option)
-    options = temp_options
-    if not options:
-        return list()
-    paths = list()
-    visited.add(x)
-    for option in options:
-        paths_res = find_all_paths(option, y, undirected_graph, visited)
-        if paths_res:
-            for path in paths_res:
-                path.append(x)
-                paths.append(path)
-    return paths
-
-
-def is_path_blocked(path, evidences, graph):
-    if len(path) < 3:
-        return False
-    for i in range(0, len(path)):
-        if i > len(path) - 3:
-            return False
-        node1 = path[i]
-        node2 = path[i + 1]
-        node3 = path[i + 2]
-        # A -> C -> B
-        if node2 in graph[node1] and node3 in graph[node2]:
-            if node2 in evidences:
-                return True
-        elif node1 in graph[node2] and node2 in graph[node3]:
-            # A <- C <- B
-            if node2 in evidences:
-                return True
-        elif node1 in graph[node2] and node3 in graph[node2]:
-            # A <- C -> B
-            if node2 in evidences:
-                return True
-        elif node2 in graph[node1] and node2 in graph[node3]:
-            # A -> C <- B
-            if node2 not in evidences:
-                return True
-    return False
+        temp = dist.copy()
+        normal = sum(dist.values())
+        for entry, val in zip(dist.keys(), dist.values()):
+            temp[entry] = val / normal
+        return temp
 
 
 def create_undirected_graph(graph: dict):
     undirected_graph = dict()
     for node in graph.keys():
-        temp_list = graph[node]
+        temp_list = graph[node].copy()
         for item in graph.keys():
             if node in graph[item] and item not in graph[node]:
                 temp_list.append(item)
         undirected_graph[node] = temp_list
     return undirected_graph
-
-
-def reverse_paths(paths):
-    res = []
-    for path in paths:
-        path.reverse()
-        res.append(path)
-    return res
-
-
-def create_evidences_pos(evidences):
-    temp = list()
-    for pos, val in evidences:
-        temp.append(pos)
-    return temp
-
-
-def separation(graph, x, y, evidences, undirected_graph):
-    visited = set()
-    paths = find_all_paths(x, y, undirected_graph=undirected_graph, visited=visited)
-    paths = reverse_paths(paths)
-    evidences_pos = create_evidences_pos(evidences)
-    for path in paths:
-        if not is_path_blocked(path, evidences_pos, graph):
-            print("dependent")
-            return
-    print("independent")
-
-
-def join_factors(hidden_var, cpts, graph):
-    for child in graph[hidden_var]:
-        # cpts[hidden_var] = multiply(cpts[child], cpts[hidden_var], hidden_var)
-        pass
-
-
-def eliminate_variable(hidden_var, cpts):
-    pass
-
-
-def variable_elimination(hiddens: list, graph, cpts):
-    if not hiddens:
-        return cpts
-    to_eliminate = hiddens.pop(0)
-    join_factors(to_eliminate, cpts, graph)
-    eliminate_variable(to_eliminate, cpts)
-    return variable_elimination(hiddens, graph, cpts)
 
 
 def get_input():
@@ -300,19 +282,21 @@ def get_input():
     evidences = re.findall("(\d)->(\d)", input_txt) if input_txt else list()
     x, y = list(map(int, input().split(" ")))
     undirected_graph = create_undirected_graph(graph)
-    separation(graph, x, y, evidences, undirected_graph)
     evidences = create_evidences(evidences)
     net = Net(graph, undirected_graph, graph_cpts, evidences)
-    res = net.variable_elimination(x, evidences)
-    print(res)
-    res = net.variable_elimination(y, evidences)
-    print(res)
+    Net.reachable(net.net, x, evidences.keys(), y)
+    net.variable_elimination(x, evidences)
+    net.variable_elimination(y, evidences)
 
 
 def create_evidences(evidences):
     result = dict()
     for var, val in evidences:
-        result[var] = val
+        if val == '1':
+            value = True
+        else:
+            value = False
+        result[int(var)] = value
     return result
 
 
