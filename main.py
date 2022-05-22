@@ -1,5 +1,4 @@
 import re
-
 import itertools
 from collections import defaultdict
 
@@ -192,9 +191,7 @@ class Net:
         return l
 
     def ordering(self):
-        a = self.topological_sort()
-        a.reverse()
-        return a
+        return self.net.keys()
 
     def eliminate(self, var, factors, evidences):
         base_factor = None
@@ -233,7 +230,7 @@ class Net:
         temp_factor = None
         for factor in factors:
             if temp_factor:
-                temp_factor = self.join(None, temp_factor, factor, e)
+                temp_factor = self.join(temp_factor, factor, e)
             else:
                 temp_factor = factor
 

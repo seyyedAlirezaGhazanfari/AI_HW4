@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import shutil
 
 SIZE = 100000
 
@@ -35,7 +36,6 @@ def draw_original_dists():
     plt.plot(x, dist3_dens(x), color="r")
     plt.savefig("./part1/pdf3.png")
     plt.close()
-
 
 def gaussian_sampling(mean, variance):
     # box muller algorithm
@@ -85,9 +85,9 @@ def create_log_file(list1, list2, list3):
     dist3_var = np.std(list3)
     with open("./part1/log.txt", "w") as file:
         file.flush()
-        file.write("{:.4f} {:.4f}\n".format(dist1_mean, dist1_var))
-        file.write("{:.4f} {:.4f}\n".format(dist2_mean, dist2_var))
-        file.write("{:.4f} {:.4f}\n".format(dist3_mean, dist3_var))
+        file.write("1 {:.4f} {:.4f}\n".format(dist1_mean, dist1_var))
+        file.write("2 {:.4f} {:.4f}\n".format(dist2_mean, dist2_var))
+        file.write("3 {:.4f} {:.4f}\n".format(dist3_mean, dist3_var))
         file.close()
 
 
@@ -98,7 +98,11 @@ def geometric_sampling(p):
 
 
 def run():
-    os.makedirs("part1")
+    try:
+        os.makedirs("part1")
+    except FileExistsError:
+        shutil.rmtree("part1")
+        os.makedirs("part1")
     draw_original_dists()
     create_custom_dists()
 
